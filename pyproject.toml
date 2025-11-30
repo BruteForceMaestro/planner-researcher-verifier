@@ -1,0 +1,19 @@
+[project]
+name = "math-assistant"
+version = "0.1.0"
+description = "An LLM-powered assistant that uses SymPy, and the Lean engine for research-grade working-through-the-tedium."
+authors = [
+    {name = "dimash",email = "dimas.tabayev@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "sympy (>=1.14.0,<2.0.0)",
+    "mpmath (>=1.3.0,<2.0.0)",
+    "autogen (>=0.10.1,<0.11.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
