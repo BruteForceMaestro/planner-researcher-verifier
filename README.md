@@ -19,3 +19,10 @@ The assistant will route math requests through the registered Sympy tools via Au
   `python math_agent.py --trace "Solve x^2 = 4"`
 - Persist traces for later analysis (JSONL):  
   `python math_agent.py --trace --trace-file run.trace.jsonl "Integrate sin(x) from 0 to pi"`
+
+## UI (Streamlit)
+- Install extras if you haven't: `pip install streamlit autogen sympy mpmath python-dotenv`
+- Start the web UI with LaTeX chat + tool traces:  
+  `streamlit run ui_app.py`
+- Provide your API key in the sidebar (or via `OPENAI_API_KEY`), choose model/temperature, and chat.  
+  Use `$...$`/`$$...$$` for LaTeX; toggle the trace panel to inspect LLM reasoning and SymPy tool calls.
