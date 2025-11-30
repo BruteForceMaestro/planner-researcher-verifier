@@ -13,3 +13,9 @@ An AutoGen-based mathematics assistant that calls the Sympy-backed tools in `sym
   `python math_agent.py --model gpt-4o-mini --temperature 0.2 --max-auto-steps 3 "Series expand e^x around 0 to order 6"`
 
 The assistant will route math requests through the registered Sympy tools via AutoGen function-calling.
+
+## Tracing
+- See a structured trace of LLM thinking and tool calls after the run:  
+  `python math_agent.py --trace "Solve x^2 = 4"`
+- Persist traces for later analysis (JSONL):  
+  `python math_agent.py --trace --trace-file run.trace.jsonl "Integrate sin(x) from 0 to pi"`

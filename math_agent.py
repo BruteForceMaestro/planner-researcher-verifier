@@ -11,8 +11,10 @@ from __future__ import annotations
 import argparse
 import os
 from typing import Dict, Iterable, List, Optional
+from dotenv import load_dotenv
 
 from autogen import AssistantAgent, UserProxyAgent
+from trace_utils import collect_trace, render_trace, write_trace_json
 
 from sympy_tools import (
     numeric_check_equality,
@@ -35,7 +37,7 @@ def _build_config_list(model: str, api_key: Optional[str]) -> List[Dict[str, str
     return [{"model": model, "api_key": key}]
 
 
-def register_sympy_tools(assistant: AssistantAgent, caller: UserProxyAgent) -> None:
+def register_sympy_tools(assistant: AssistantAgent) -> None:
     """
     Register the Sympy-backed math tools so the assistant can call them via
     function calling.
@@ -49,12 +51,7 @@ def register_sympy_tools(assistant: AssistantAgent, caller: UserProxyAgent) -> N
             "sympy_series": sympy_series,
             "sympy_solve_equation": sympy_solve_equation,
             "numeric_check_equality": numeric_check_equality,
-        },
-        caller=caller,
-        description=(
-            "Symbolic math utilities backed by sympy. "
-            "Each function expects string inputs representing expressions."
-        ),
+        }
     )
 
 
@@ -90,7 +87,7 @@ def build_math_assistant(
         max_consecutive_auto_reply=max_consecutive_auto_reply,
         code_execution_config=False,
     )
-    register_sympy_tools(assistant, user_proxy)
+    register_sympy_tools(assistant)
     return assistant, user_proxy
 
 
@@ -102,16 +99,30 @@ def start_chat(
     temperature: float = 0.0,
     human_input_mode: str = "ALWAYS",
     max_consecutive_auto_reply: int = 5,
+    trace: bool = False,
+    trace_file: Optional[str] = None,
 ) -> None:
     """Spin up the assistant and kick off a chat with the initial message."""
+    load_dotenv()
     assistant, user_proxy = build_math_assistant(
         model=model,
-        api_key=api_key,
+        api_key=api_key or os.getenv("OPENAI_API_KEY"),
         temperature=temperature,
         human_input_mode=human_input_mode,
         max_consecutive_auto_reply=max_consecutive_auto_reply,
     )
     user_proxy.initiate_chat(assistant, message=message)
+
+    if trace or trace_file:
+        trace_entries = collect_trace(assistant, user_proxy)
+        if trace and trace_entries:
+            print("\n=== Agent Trace ===")
+            print(render_trace(trace_entries))
+        if trace_file and trace_entries:
+            write_trace_json(trace_entries, trace_file)
+            print(f"\nTrace written to {trace_file}")
+        if not trace_entries:
+            print("\n(No trace captured.)")
 
 
 def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
@@ -145,6 +156,16 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
         help="Max consecutive auto replies before asking for input (default: %(default)s).",
     )
     parser.add_argument(
+        "--trace",
+        action="store_true",
+        help="Print a detailed trace of the conversation (LLM messages + tool calls).",
+    )
+    parser.add_argument(
+        "--trace-file",
+        default=None,
+        help="Write the trace to a JSONL file for later inspection.",
+    )
+    parser.add_argument(
         "message",
         nargs="?",
         default="Simplify (x**2 - 1)/(x - 1) and integrate sin(x) from 0 to pi.",
@@ -162,6 +183,8 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
         temperature=args.temperature,
         human_input_mode=args.human_input_mode,
         max_consecutive_auto_reply=args.max_auto_steps,
+        trace=args.trace,
+        trace_file=args.trace_file,
     )
 
 
