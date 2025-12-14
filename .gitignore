@@ -2,3 +2,8 @@
 .env
 __pycache__
 traces
+
+lean_verifier/.lake/
+lean_verifier/lake-packages/
+
+.vscode

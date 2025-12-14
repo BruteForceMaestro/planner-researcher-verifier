@@ -7,10 +7,10 @@ from __future__ import annotations
 
 import argparse
 import os
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Sequence, Literal
 from dotenv import load_dotenv
 import autogen
-from autogen import AssistantAgent, UserProxyAgent
+from autogen import AssistantAgent, UserProxyAgent, GroupChatManager
 from trace_utils import collect_trace, render_trace, write_trace_json
 from autogen.agentchat import register_function as ag_register_function  # noqa: F401
 
@@ -18,10 +18,11 @@ import sympy as sp
 import mpmath as mp
 import multiprocessing as mp_proc
 import traceback
+import subprocess
 
 # Time limit for verification code in the separate process
 TIME_LIMIT_SECONDS = 10
-
+HumanInputMode = Literal['ALWAYS', 'TERMINATE', 'NEVER']
 
 def _build_config_list(model: str, api_key: Optional[str]) -> List[Dict[str, str]]:
     """Create the config_list expected by AutoGen from the provided model/key."""
@@ -143,13 +144,69 @@ def verify_solution(proposed_solution_code: str) -> str:
     return f"VERDICT:INCONCLUSIVE\nMESSAGE:{msg}"
 
 
+def verify_with_lean(lean_code: str) -> str:
+    """
+    Verifies Lean code by writing it to a file inside the 'lean_verifier' 
+    directory and running the Lean compiler.
+    """
+    # 1. Define the path to the Lean project subdirectory
+    LEAN_PROJECT_DIR = os.path.join(os.getcwd(), "lean_verifier")
+    
+    # 2. Check if the directory exists (sanity check)
+    if not os.path.exists(LEAN_PROJECT_DIR):
+        return (
+            "VERDICT:INCONCLUSIVE\n"
+            f"MESSAGE: Lean project directory '{LEAN_PROJECT_DIR}' not found. "
+            "Please initialize it with 'lake new lean_verifier math'."
+        )
+
+    filename = "temp_verification.lean"
+    file_path = os.path.join(LEAN_PROJECT_DIR, filename)
+    
+    # 3. Write the code into the Lean project folder
+    try:
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(lean_code)
+    except IOError as e:
+        return f"VERDICT:INCONCLUSIVE\nMESSAGE:Could not write file: {e}"
+
+    try:
+        # 4. Run 'lake env lean <file>' INSIDE the lean_verifier folder
+        #    cwd=LEAN_PROJECT_DIR ensures it finds lakefile.lean
+        result = subprocess.run(
+            ["lake", "env", "lean", filename],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            cwd=LEAN_PROJECT_DIR 
+        )
+        
+        stdout = result.stdout
+        stderr = result.stderr
+        
+        if result.returncode == 0:
+            return f"VERDICT:PASS\nMESSAGE:Lean verification successful.\nOutput: {stdout}"
+        else:
+            return f"VERDICT:FAIL\nMESSAGE:Lean verification failed.\nError:\n{stderr}\n{stdout}"
+
+    except subprocess.TimeoutExpired:
+        return "VERDICT:INCONCLUSIVE\nMESSAGE:Lean verification timed out."
+    except Exception as e:
+        return f"VERDICT:INCONCLUSIVE\nMESSAGE:System error during Lean execution: {str(e)}"
+    finally:
+        # Cleanup
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+
+
 def build_math_assistant(
     *,
     model: str = "gpt-5.1",
     api_key: Optional[str] = None,
-    human_input_mode: str = "ALWAYS",
+    human_input_mode: HumanInputMode = "ALWAYS",
     max_consecutive_auto_reply: int = 5,
-) -> tuple[AssistantAgent, UserProxyAgent]:
+) -> tuple[UserProxyAgent, GroupChatManager]:
     """
     Construct the AutoGen math assistant and its user proxy.
     """
@@ -182,12 +239,33 @@ def build_math_assistant(
                         "required": ["proposed_solution_code"],
                     },
                 },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "verify_with_lean",
+                    "description": (
+                        "Verifies a mathematical claim by checking if the provided Lean 4 code compiles. "
+                        "Use this for logical steps, theorem proving, or when Python symbolic checks are insufficient. "
+                        "The code must include necessary imports (e.g., `import Mathlib`)."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "lean_code": {
+                                "type": "string",
+                                "description": "Valid Lean 4 code containing the theorem and proof (or `by sorry` to check syntax only)."
+                            }
+                        },
+                        "required": ["lean_code"],
+                    },
+                },
             }
+            
         ],
         "config_list": _build_config_list(model, api_key),
         "temperature": 0.0,
     }
-
     user_proxy = UserProxyAgent(
         name="math_user",
         human_input_mode=human_input_mode,
@@ -234,6 +312,10 @@ Your behavior MUST be incremental and stepwise:
    - If the Verifier reports VERDICT:INCONCLUSIVE for STEP k, you must rephrase or
      adjust STEP k to be more directly verifiable (e.g., simpler claim, alternative
      characterization) and try again.
+   - If the Verifier reports VERDICT:FAIL with Lean errors:
+     - You likely made a logical error or stated a false claim.
+     - OR, the formalization was incorrect.
+     - Reformulate the step to be more precise or break it down into smaller, easier-to-prove lemmas.
 
 Your goal is to progress through the problem via a sequence of such STEPs, each validated
 by the Verifier before you proceed to the next.
@@ -263,18 +345,23 @@ Protocol:
 2. For each such message you must:
    - Identify the current STEP number k.
    - Extract the precise mathematical claim to be checked.
-   - Call the tool `verify_solution` with Python code that:
-       * imports SymPy / mpmath as needed (ALWAYS keep in mind the limitations of the engine and possible failure modes),
-       * reconstructs the relevant expressions / functions,
-       * performs a symbolic or numeric test (simplify, differentiation+comparison,
-         numeric sampling, asymptotics, etc.),
-       * sets:
+   For each STEP, choose the appropriate verification tool:
 
-             verification_passed = True or False
-             verification_message = "<short explanation>"
+   TYPE A: COMPUTATION / ALGEBRA
+   If the step involves simplifying an expression, computing an integral, or solving an equation:
+   -> Use `verify_solution` (Python/SymPy).
 
-         or raises AssertionError on failure, OR
-         sets verification_output for an exploratory result.
+   TYPE B: LOGIC / PROOF
+   If the step asserts a property (e.g., "Sequence X converges", "A implies B", "Group G is abelian"):
+   -> Use `verify_with_lean`.
+      * Write a complete Lean file content.
+      * ALWAYS start with `import Mathlib`.
+      * State the claim as a `theorem` or `example`.
+      * If you can prove it, provide the proof block (e.g., `by ...`).
+      * If the proof is too complex for you to generate immediately, you may try `by simp` or `by library_search` (if available), 
+        or check if the statement is syntactically valid and type-checks by using `by sorry` (though this only verifies syntax, not truth).
+      * Do NOT use import Mathlib (too slow). Always import specific modules like Mathlib.Data.Real.Basic, and in general be mindful of timeout errors like these.
+
 
 3. The tool `verify_solution` will return a string with two lines:
 
@@ -388,6 +475,14 @@ High-level protocol:
         name="verify_solution",
         description="Executes Python code using SymPy to verify a mathematical claim.",
     )
+
+    ag_register_function(
+        verify_with_lean,
+        caller=verifier,
+        executor=verifier,
+        name="verify_with_lean",
+        description="Verifies a claim using Lean 4.",
+    )
     return user_proxy, manager
 
 
@@ -397,7 +492,7 @@ def start_chat(
     model: str = "gpt-5.1",
     api_key: Optional[str] = None,
     temperature: float = 0.0,
-    human_input_mode: str = "ALWAYS",
+    human_input_mode: HumanInputMode = "ALWAYS",
     max_consecutive_auto_reply: int = 5,
     trace: bool = False,
     trace_file: Optional[str] = None,
@@ -424,7 +519,7 @@ def start_chat(
             print("\n(No trace captured.)")
 
 
-def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
+def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the AutoGen Sympy math assistant.")
     parser.add_argument(
         "--model",
@@ -473,7 +568,7 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def main(argv: Optional[Iterable[str]] = None) -> None:
+def main(argv: Optional[Sequence[str]] = None) -> None:
     args = parse_args(argv)
     start_chat(
         message=args.message,
