@@ -6,4 +6,5 @@ traces
 lean_verifier/.lake/
 lean_verifier/lake-packages/
 
+.DS_Store
 .vscode

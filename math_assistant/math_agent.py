@@ -11,7 +11,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Literal
 from dotenv import load_dotenv
 import autogen
 from autogen import AssistantAgent, UserProxyAgent, GroupChatManager
-from trace_utils import collect_trace, render_trace, write_trace_json
+from math_assistant.trace_utils import collect_trace, render_trace, write_trace_json
 from autogen.agentchat import register_function as ag_register_function  # noqa: F401
 
 import sympy as sp
@@ -150,7 +150,9 @@ def verify_with_lean(lean_code: str) -> str:
     directory and running the Lean compiler.
     """
     # 1. Define the path to the Lean project subdirectory
-    LEAN_PROJECT_DIR = os.path.join(os.getcwd(), "lean_verifier")
+    # Resolve relative to the repo root (one level above this file), so this works
+    # even if the current working directory is not the repo root.
+    LEAN_PROJECT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "lean_verifier")
     
     # 2. Check if the directory exists (sanity check)
     if not os.path.exists(LEAN_PROJECT_DIR):

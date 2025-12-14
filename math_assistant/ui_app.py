@@ -3,15 +3,24 @@
 
 import os
 import re
+import sys
 import threading
 from datetime import datetime
+from pathlib import Path
+
+# When Streamlit runs a script by path (e.g. `streamlit run math_assistant/ui_app.py`),
+# it adds *this folder* (`math_assistant/`) to sys.path, not the repo root.
+# We want package-style imports (`math_assistant.*`), so we explicitly add the repo root.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 from openai import BadRequestError
 import streamlit as st
 from dotenv import load_dotenv
 
-from math_agent import build_math_assistant  # adjust module name if needed
-from trace_utils import collect_trace, write_trace_json
+from math_assistant.math_agent import build_math_assistant
+from math_assistant.trace_utils import collect_trace, write_trace_json
 
 load_dotenv()
 
@@ -22,7 +31,7 @@ def normalize_latex_for_streamlit(text: str) -> str:
     Heuristically convert ChatGPT-style LaTeX into something Streamlit's
     Markdown+MathJax will render.
 
-    - Convert '\[ ... \]' to '$$ ... $$'
+    - Convert '\\[ ... \\]' to '$$ ... $$'
     - Convert standalone lines of the form '[ ... ]' (with lots of backslashes)
       to '$$ ... $$'
 
